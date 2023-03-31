@@ -1,10 +1,19 @@
 from __future__ import annotations
+import os
+from time import monotonic
+
 from textual.app import App, ComposeResult
 from textual.containers import Container
 from textual.widgets import Static, Input
 from textual import events
+from textual.message import Message, MessageTarget
 
-from exercise import Exercise, OneXTwoExercise
+from exercise import Exercise, OneXTwoExercise, TypeExerciseGen, ReprExerciseGen, ExerciseGen, ExerciseSession
+
+# Ensure we are in the correct dir and related dir is ready
+FILE_DIR = os.path.dirname(__file__)
+os.makedirs(os.path.join(FILE_DIR, "_data"), exist_ok=True)
+os.chdir(FILE_DIR)
 
 
 class ExerciseWidget(Container):
@@ -67,54 +76,205 @@ class ExerciseWidget(Container):
         return result
 
 
-class ExerciseUI(App):
+class ExerciseUI(Container):
     DEFAULT_CSS = """
-    Screen {
-        align: center middle;
-    }
 
     .content {
         align: center middle;
     }
 
-    #message {
+    #title {
         width: auto;
-        content-align: center top;
-        height: 3;
+        content-align: right top;
+        height: 5;
+    }
+
+    #status {
+        width: auto;
+        content-align: right top;
+        height: 2;
+    }
+
+    .incorrect ExerciseWidget {
+        border: heavy red;
+    }
+
+    .correct ExerciseWidget {
+        border: heavy green;
     }
 
     """
 
+    class Completed(Message):
+        def __init__(self, session: ExerciseSession) -> None:
+            super().__init__()
+            self.session = session
+
+    def __init__(self, gen: ExerciseGen, driving_options: dict, *args,
+                 **kwargs) -> None:
+        """ There are two modes to drive the exercise
+
+         one is by time, e.g. do 5 mins exercises the other is by the number of
+         exercises, e.g. do 100 exercises
+
+         So driving_options is something like ("time", 5*60) that means 5min
+         or ("count", 100) that means 100 exercises
+        """
+        self.gen = gen
+        self.driving_mode, self.driving_count = driving_options
+        assert self.driving_mode in ["time", "count"]
+        self.driving_remaining = self.driving_count
+        self.session = ExerciseSession(FILE_DIR)
+
+        self.start_time = monotonic()
+        super().__init__(*args, **kwargs)
+
     def compose(self) -> ComposeResult:
         self.ex_container = Container(classes="content")
         with self.ex_container:
-            self.message = Static(id="message")
-            yield self.message
+            yield Static("[bold yellow] ctrl+d to stop", id="title")
+            self.status = Static(id="status")
+            yield self.status
 
     def new_exercise(self):
         if hasattr(self, "ex"):
             self.ex.remove()
-        self.exercise = OneXTwoExercise()
+        self.exercise = self.gen.get_an_exercise()
         self.ex = ExerciseWidget(str(self.exercise))
         self.ex_container.mount(self.ex)
+        self.start_time = monotonic()
 
     def on_mount(self):
+        if self.driving_mode == "time":
+            self.set_interval(1, self.time_tick)
+        self.update_status()
         self.new_exercise()
 
+    def time_tick(self):
+        self.driving_remaining -= 1
+        self.update_status()
+        if self.driving_remaining <= 0:
+            self.done()
+
+    def update_status(self):
+        status = f" [bold green]✓ {self.session.correct}[/]"
+        status += f"  [bold red] x {self.session.incorrect}[/]"
+        if self.driving_mode == "count":
+            remain = str(self.driving_remaining)
+        else:
+            minutes, seconds = divmod(self.driving_remaining, 60)
+            hours, minutes = divmod(minutes, 60)
+            remain = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        status += f"      [bold white] Remaining: [bold yellow]{remain}[/]"
+        self.status.update(status)
+
+    def done(self):
+        self.session.store_results()
+        self.post_message(self.Completed(self.session))
+
     def on_key(self, e: events.Key):
+        if e.key == "ctrl+d":
+            self.done()
+            return
         if e.key != "enter":
             return
         result, msg = self.exercise.check(self.ex.fetch_value(clear=True))
-        if msg:
-            self.message.update(f"[bold red]{msg}[/]")
+        ms_elapsed = int((monotonic() - self.start_time) * 1000)
+        if result != Exercise.Correct:
+            self.remove_class("correct")
+            self.add_class("incorrect")
+            if result == Exercise.Invalid:
+                self.start_time = monotonic()
+            elif result == Exercise.Error:
+                self.session.finish_an_exercise(self.exercise, False,
+                                                ms_elapsed)
         else:
-            self.message.update(f"[bold green]Correct![/]")
+            self.remove_class("incorrect")
+            self.add_class("correct")
+            self.session.finish_an_exercise(self.exercise, True, ms_elapsed)
             self.new_exercise()
+            if self.driving_mode == "count":
+                self.driving_remaining -= 1
+        self.update_status()
+        if self.driving_remaining <= 0:
+            self.done()
 
 
-# there are two modes to drive the exercise
-# one is by time, e.g. do 5 mins exercises
-# the other is by the number of exercises, e.g. do 100 exercises
+class StartUI(Container):
+    DEFAULT_CSS = """
+    .content {
+        align: center middle;
+    }
 
-app = ExerciseUI()
+    Static {
+        width: auto;
+        content-align: left middle;
+        height: 2;
+    }
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+
+    def compose(self) -> ComposeResult:
+        with Container(classes="content"):
+            yield Static(f"Welcome")
+
+
+class SummaryUI(Container):
+    DEFAULT_CSS = """
+    .content {
+        align: center middle;
+    }
+
+    Static {
+        width: auto;
+        content-align: left middle;
+        height: 2;
+    }
+    """
+
+    def __init__(self, session: ExerciseSession, *args, **kwargs) -> None:
+        self.session = session
+        super().__init__(*args, **kwargs)
+
+    def compose(self) -> ComposeResult:
+        with Container(classes="content"):
+            yield Static(
+                f"[bold yellow]Total # Exercises:[/] {self.session.count}")
+            yield Static(f"[bold green]  # Correct:[/] {self.session.correct}")
+            yield Static(f"[bold red]  # Wrong:[/] {self.session.incorrect}")
+            avg = self.session.total_time / self.session.count / 1000
+            yield Static(f"[bold yellow] Average Time:[/] {avg:.2f} seconds")
+
+
+class MainApp(App):
+    DEFAULT_CSS = """
+    Screen {
+        align: center middle;
+    }
+    #body {
+        align: center middle;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        self.body = Container(id="body")
+        yield self.body
+
+    def on_mount(self):
+        self.ui = ExerciseUI(TypeExerciseGen(OneXTwoExercise.TYPE),
+                             ("time", 5 * 60))
+        self.body.mount(self.ui)
+
+    def on_exercise_ui_completed(self, msg: ExerciseUI.Completed) -> None:
+        self.ui.remove()
+        self.ui = SummaryUI(msg.session)
+        self.body.mount(self.ui)
+
+    def on_key(self, e: events.Key):
+        return
+
+
+app = MainApp()
 app.run()
