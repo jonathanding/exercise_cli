@@ -3,12 +3,13 @@ import os
 from time import monotonic
 
 from textual.app import App, ComposeResult
-from textual.containers import Container
-from textual.widgets import Static, Input
+from textual.containers import Container, Horizontal, Vertical
+from textual.widgets import Static, Input, Label, Button
 from textual import events
 from textual.message import Message, MessageTarget
+from textual.widgets import RadioButton, RadioSet
 
-from exercise import Exercise, OneXTwoExercise, TypeExerciseGen, ReprExerciseGen, ExerciseGen, ExerciseSession
+from exercise import Exercise, TwoXTwoExercise, OneXTwoExercise, TypeExerciseGen, ReprExerciseGen, ExerciseGen, ExerciseSession
 
 # Ensure we are in the correct dir and related dir is ready
 FILE_DIR = os.path.dirname(__file__)
@@ -110,8 +111,8 @@ class ExerciseUI(Container):
             super().__init__()
             self.session = session
 
-    def __init__(self, gen: ExerciseGen, driving_options: dict, *args,
-                 **kwargs) -> None:
+    def __init__(self, gen: ExerciseGen, driving_options: tuple[str, int],
+                 *args, **kwargs) -> None:
         """ There are two modes to drive the exercise
 
          one is by time, e.g. do 5 mins exercises the other is by the number of
@@ -132,7 +133,9 @@ class ExerciseUI(Container):
     def compose(self) -> ComposeResult:
         self.ex_container = Container(classes="content")
         with self.ex_container:
-            yield Static("[bold yellow] ctrl+d to stop", id="title")
+            yield Static(
+                "Press [bold blue] ctrl + d[/] to [bold yellow]stop[/]",
+                id="title")
             self.status = Static(id="status")
             yield self.status
 
@@ -202,23 +205,108 @@ class ExerciseUI(Container):
 
 class StartUI(Container):
     DEFAULT_CSS = """
-    .content {
+    StartUI {
+        layout: vertical;
         align: center middle;
     }
-
-    Static {
+    Horizontal {
+        height: 30; 
+        width: 100%;
+        align: center top;
+        content-align: center top;
+    }
+    Vertical {
         width: auto;
-        content-align: left middle;
-        height: 2;
+        align: center top;
+    }
+    .bar {
+        width: auto;
+        height: 36%;
+    }
+    .space {
+        width: auto;
+        height: 10;
+    }
+    .v1 {
+        align: right top;
+    }
+    .v2 {
+        align: center top;
+        width: 30;
+    }
+    .v3 {
+        align: left top;
+    }
+    #go {
+        text-style: bold;
+        background: royalblue;
+        color: white;
     }
     """
+
+    class Start(Message):
+        def __init__(self, driver: tuple[str, int], ty: str,
+                     source: str) -> None:
+            super().__init__()
+            self.driver = driver
+            self.type = ty
+            self.source = source
+
+    DRIVERS = [
+        ("3 min", ("time", 3 * 60)),
+        ("5 min", ("time", 5 * 60)),
+        ("20 exercises", ("count", 20)),
+        ("50 exercises", ("count", 50)),
+    ]
+
+    TYPES = [
+        ("1-digit X 2-digit", OneXTwoExercise),
+        ("2-digit X 2-digit", TwoXTwoExercise),
+    ]
+
+    SOURCES = [
+        ("new", "new"),
+        ("review", "review"),
+    ]
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
 
     def compose(self) -> ComposeResult:
-        with Container(classes="content"):
-            yield Static(f"Welcome")
+        with Horizontal():
+            with Vertical(classes="v1"):
+                yield Static(classes="bar")
+                yield Label("# Exercises")
+                with RadioSet(id="driver"):
+                    for idx, x in enumerate(self.DRIVERS):
+                        yield RadioButton(x[0], value=idx == 0)
+            with Vertical(classes="v2"):
+                yield Static(classes="bar")
+                yield Label("Type")
+                with RadioSet(id="type"):
+                    for idx, x in enumerate(self.TYPES):
+                        yield RadioButton(x[0], value=idx == 0)
+                yield Static(classes="space")
+                yield Button("Press Enter to Start", id="go")
+            with Vertical(classes="v3"):
+                yield Static(classes="bar")
+                yield Label("Source")
+                with RadioSet(id="source"):
+                    for idx, x in enumerate(self.SOURCES):
+                        yield RadioButton(x[0], value=idx == 0)
+
+    def on_mount(self):
+        self.query_one("#go").focus()
+
+    def on_key(self, e: events.Key) -> None:
+        if e.key != "enter":
+            return
+        self.post_message(
+            self.Start(
+                self.DRIVERS[self.query_one("#driver").pressed_index][1],
+                self.TYPES[self.query_one("#type").pressed_index][1],
+                self.SOURCES[self.query_one("#source").pressed_index][1],
+            ))
 
 
 class SummaryUI(Container):
@@ -232,7 +320,17 @@ class SummaryUI(Container):
         content-align: left middle;
         height: 2;
     }
+
+    #key {
+        display: none;
+    }
+
     """
+
+    class Command(Message):
+        def __init__(self, cmd: str) -> None:
+            super().__init__()
+            self.command = cmd
 
     def __init__(self, session: ExerciseSession, *args, **kwargs) -> None:
         self.session = session
@@ -240,12 +338,31 @@ class SummaryUI(Container):
 
     def compose(self) -> ComposeResult:
         with Container(classes="content"):
+            yield Input(id="key")  # a hack way to accept keyboard event
             yield Static(
                 f"[bold yellow]Total # Exercises:[/] {self.session.count}")
             yield Static(f"[bold green]  # Correct:[/] {self.session.correct}")
             yield Static(f"[bold red]  # Wrong:[/] {self.session.incorrect}")
-            avg = self.session.total_time / self.session.count / 1000
-            yield Static(f"[bold yellow] Average Time:[/] {avg:.2f} seconds")
+            if self.session.count > 0:
+                avg = f"{self.session.total_time / self.session.count / 1000:.2f}"
+            else:
+                avg = "N/A"
+            yield Static(f"[bold yellow] Average Time:[/] {avg} seconds")
+
+            yield Static()
+            yield Static("Press [bold blue]ENTER[/] to [bold yellow]Do More[/]")
+            yield Static(
+                "Press [bold blue]ctrl + d[/] to [bold yellow]See Analysis[/]")
+            yield Static("Press [bold blue]ctrl + c[/] to [bold yellow]Quit[/]")
+
+    def on_mount(self):
+        self.query_one("#key").focus()
+
+    def on_key(self, e: events.Key):
+        if e.key == "enter":
+            self.post_message(self.Command("do_more"))
+        elif e.key == "ctrl+d":
+            pass
 
 
 class MainApp(App):
@@ -253,24 +370,29 @@ class MainApp(App):
     Screen {
         align: center middle;
     }
-    #body {
-        align: center middle;
-    }
     """
 
     def compose(self) -> ComposeResult:
-        self.body = Container(id="body")
-        yield self.body
-
-    def on_mount(self):
-        self.ui = ExerciseUI(TypeExerciseGen(OneXTwoExercise.TYPE),
-                             ("time", 5 * 60))
-        self.body.mount(self.ui)
+        self.ui = StartUI()
+        yield self.ui
 
     def on_exercise_ui_completed(self, msg: ExerciseUI.Completed) -> None:
         self.ui.remove()
         self.ui = SummaryUI(msg.session)
-        self.body.mount(self.ui)
+        self.mount(self.ui)
+
+    def on_start_ui_start(self, msg: StartUI.Start) -> None:
+        self.start_msg = msg
+        self.ui.remove()
+        gen = None
+        if msg.source == "new":
+            gen = TypeExerciseGen(msg.type.TYPE)
+        self.ui = ExerciseUI(gen, msg.driver)
+        self.mount(self.ui)
+
+    def on_summary_ui_command(self, msg: SummaryUI.Command) -> None:
+        if msg.command == "do_more":
+            self.on_start_ui_start(self.start_msg)
 
     def on_key(self, e: events.Key):
         return
